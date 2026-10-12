@@ -9,6 +9,30 @@ from Blueprints.CraftPackageObject import CraftPackageObject
 from Packager.AppxPackager import AppxPackager
 from Packager.NullsoftInstallerPackager import NullsoftInstallerPackager
 
+# The product name, in one place, because three different things have to
+# agree about it or the package breaks in ways that do not mention names:
+#
+#   * files365.json in the desktop repo (applicationName), which
+#     admin/theme_patcher.py reads when it renames the built artefacts,
+#   * the bundle path this blueprint hands the macOS packager, which must
+#     match what the patcher renamed the bundle TO,
+#   * the executable name, which the patcher derives from the application
+#     name as name.lower().replace(" ", "_") on Windows and Linux, and
+#     uses verbatim on macOS.
+#
+# Upstream keeps these consistent by deriving them all from buildBeta.
+# This fork derives them from here. If files365.json and this constant
+# ever disagree, the macOS job fails at "Checking for absolute library
+# paths in package" -- the packager looking for a bundle the patcher
+# named something else. See DO-598.
+FILES365_APPLICATION_NAME = "Files365"
+
+# The theme the patcher applies, relative to the desktop repo's source
+# directory. Upstream applies beta.json only when buildBeta is set; this
+# fork always applies its own, because an unbranded Files365 build is not
+# a thing we ever want to ship by accident.
+FILES365_THEME_FILE = "files365.json"
+
 
 class subinfo(info.infoclass):
     def registerOptions(self):
@@ -24,9 +48,15 @@ class subinfo(info.infoclass):
         self.svnTargets["main"] = "https://github.com/opencloud-eu/desktop.git|main"
         self.defaultTarget = "main"
 
-        self.description = "OpenCloud Desktop"
-        self.displayName = "OpenCloud Beta" if self.options.dynamic.buildBeta else "OpenCloud"
-        self.webpage = "https://github.com/opencloud-eu/desktop"
+        # Files365 fork. Every name below must agree with files365.json in
+        # the desktop repo, because admin/theme_patcher.py renames the
+        # built artefacts to whatever THAT file says and this blueprint
+        # tells the packager where to find them. Upstream keeps the two
+        # sides consistent by deriving both from buildBeta; we derive both
+        # from one product name instead. See DO-598.
+        self.description = "Files365 Desktop"
+        self.displayName = FILES365_APPLICATION_NAME
+        self.webpage = "https://files365.io"
 
     def setDependencies(self):
         self.buildDependencies["craft/craft-blueprints-opencloud"] = None
@@ -90,7 +120,12 @@ class Package(CMakePackageBase):
 
     @property
     def applicationExecutable(self):
-        return "opencloud_beta" if self.subinfo.options.dynamic.buildBeta else "opencloud"
+        # Must match what theme_patcher.py renames the binaries to:
+        # applicationName.lower() with spaces as underscores. Returning
+        # upstream's "opencloud" here would leave Windows shortcuts, the
+        # cmd alias and the autostart entry all pointing at a file the
+        # patcher has already renamed away.
+        return FILES365_APPLICATION_NAME.lower().replace(" ", "_")
 
     def buildNumber(self):
         if self.subinfo.options.dynamic.buildNumber:
@@ -201,11 +236,19 @@ class Package(CMakePackageBase):
 
     def createPackage(self):
         self.blacklist_file.append(os.path.join(self.blueprintDir(), "blacklist.txt"))
-        self.defines["appname"] = "OpenCloud" if not self.subinfo.options.dynamic.buildBeta else "OpenCloud Beta"
+        # Not derived from buildBeta: the patcher renames to
+        # FILES365_APPLICATION_NAME either way, so appname -- and the
+        # apppath built from it below -- has to say the same.
+        self.defines["appname"] = FILES365_APPLICATION_NAME
         self.defines["desktopFile"] = self.applicationExecutable
         self.defines["appimage_native_package_name"] = f'{self.applicationExecutable.lower().replace("_", "-")}-desktop'
         self.defines["apppath"] = "Applications/KDE/" + self.defines["appname"] + ".app"
-        self.defines["company"] = "OpenCloud GmbH"
+        # Shown in Windows installer metadata and the Programs list.
+        # Files365 rather than the legal entity, per the branding
+        # direction of 12/10/2026 -- the one place the company name still
+        # appears is the code signature, which names the certificate
+        # holder and is not a build setting.
+        self.defines["company"] = "Files365"
 
         exePath = Path(f"{self.applicationExecutable}{CraftCore.compiler.executableSuffix}")
         if isinstance(self, (NullsoftInstallerPackager, AppxPackager)):
@@ -260,7 +303,15 @@ class Package(CMakePackageBase):
         return super().preArchiveMove()
 
     def preArchive(self):
-        if self.subinfo.options.dynamic.buildBeta:
-            if not utils.system(["python3", self.sourceDir() / "admin/theme_patcher.py", self.archiveDir(), self.sourceDir() / "beta.json"]):
-                return False
+        # Always, not just for betas. This is what actually brands the
+        # product: it renames the bundle and binaries, installs the theme
+        # the client reads at startup, and replaces the icons -- after the
+        # build and before packaging, which is why it can rename things
+        # the build itself could not.
+        theme = self.sourceDir() / FILES365_THEME_FILE
+        if not theme.exists():
+            CraftCore.log.error(f"{theme} is missing -- refusing to package an unbranded client")
+            return False
+        if not utils.system(["python3", self.sourceDir() / "admin/theme_patcher.py", self.archiveDir(), theme]):
+            return False
         return super().preArchive()

@@ -4,7 +4,12 @@ import info
 class subinfo(info.infoclass):
     def setTargets(self):
         for ver in ["main"]:
-            self.svnTargets[ver] = f"[git]https://github.com/opencloud-eu/craft-blueprints-opencloud.git|{ver}|"
+            # This fork, not upstream. The package below sets
+            # dailyUpdate = True, so pointing this at opencloud-eu would
+            # have Craft pull upstream's blueprints over ours on the next
+            # build and silently un-brand the client -- the build would
+            # succeed and ship as OpenCloud. See DO-598.
+            self.svnTargets[ver] = f"[git]https://github.com/asjmp/craft-blueprints-opencloud.git|{ver}|"
         self.defaultTarget = "main"
 
     def setDependencies(self):
